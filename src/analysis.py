@@ -99,55 +99,51 @@ def pc2_ablated_accuracy(
     device = next(model.parameters()).device
     model.eval()
 
-    # Move inputs to device
     X = X.to(device)
     y = y.to(device, dtype=torch.long)
 
-    # Extract mean and PC2 from the PCA bundle (computed on W_E for your digits)
-    comps = pca_bundle["components"]        # [k, d_model]
-    mean  = pca_bundle["mean"]              # [d_model]
+    comps = pca_bundle["components"]   # [k, d_model] (float64 likely)
+    mean  = pca_bundle["mean"]         # [d_model]    (float64 likely)
     if comps.shape[0] < 2:
-        raise ValueError("pca_bundle must contain at least 2 principal components.")
-    pc2 = comps[1].to(device)               # [d_model]
-    mean = mean.to(device)                  # [d_model]
+        raise ValueError("pca_bundle must contain at least 2 PCs.")
+    pc2 = comps[1]                     # [d_model]
 
-    # Helper: compute accuracy from logits
-    def _acc_from_logits(logits: torch.Tensor, labels: torch.Tensor) -> float:
-        if logits.ndim == 3:
-            logits = logits[:, -1, :]
-        preds = logits.argmax(dim=-1)
-        return float((preds == labels).float().mean().item())
+    pos_idx = torch.as_tensor(positions, device=device, dtype=torch.long)
+
+    def _ablate_pc2(activation: torch.Tensor, hook) -> torch.Tensor:
+        """
+        activation: [B, S, d_model] at hook_embed. We:
+          - center by mean
+          - remove the PC2 component
+          - add mean back
+          - write only at selected positions
+        Critically: cast mean/pc2 to activation.dtype/device to avoid dtype errors.
+        """
+        out = activation.clone()
+        act_dtype = activation.dtype
+        mean_local = mean.to(device=activation.device, dtype=act_dtype)    # align dtype/device
+        pc2_local  = pc2.to(device=activation.device, dtype=act_dtype)
+
+        sel = out.index_select(dim=1, index=pos_idx)                       # [B, P, d]
+        sel_centered = sel - mean_local.view(1, 1, -1)                     # [B, P, d]
+        coeff = torch.einsum("bpd,d->bp", sel_centered, pc2_local)         # [B, P]
+        sel_no_pc2 = sel_centered - coeff.unsqueeze(-1) * pc2_local.view(1, 1, -1)
+        sel_edit = sel_no_pc2 + mean_local.view(1, 1, -1)                  # [B, P, d]
+        out[:, pos_idx, :] = sel_edit                                      # write-back: dtypes now match
+        return out
 
     # Original accuracy (no hooks)
     logits_orig = model(X)
-    acc_orig = _acc_from_logits(logits_orig, y)
+    logits_o = logits_orig[:, -1, :] if logits_orig.ndim == 3 else logits_orig
+    acc_orig = float((logits_o.argmax(dim=-1) == y).float().mean().item())
 
-    # Build a vectorized hook that removes *only* the PC2 component at specified positions
-    pos_idx = torch.as_tensor(positions, device=device)
-
-    def _ablate_pc2(activation: torch.Tensor, hook) -> torch.Tensor:
-        # activation: [B, S, d_model] at hook_embed
-        out = activation.clone()
-        # Select positions (B, P, d)
-        sel = out.index_select(dim=1, index=pos_idx)
-        # Center
-        sel_centered = sel - mean.view(1, 1, -1)
-        # Project onto PC2: (B,P)
-        coeff = torch.einsum("bpd,d->bp", sel_centered, pc2)
-        # Remove PC2 component: (B,P,d)
-        sel_no_pc2 = sel_centered - coeff.unsqueeze(-1) * pc2.view(1, 1, -1)
-        # Add mean back
-        sel_edit = sel_no_pc2 + mean.view(1, 1, -1)
-        # Write back into the selected positions
-        out[:, pos_idx, :] = sel_edit
-        return out
-
-    # Run with hook
+    # Ablated accuracy (hooked)
     logits_abl = model.run_with_hooks(X, fwd_hooks=[(hook_point, _ablate_pc2)])
-    acc_abl = _acc_from_logits(logits_abl, y)
+    logits_a = logits_abl[:, -1, :] if logits_abl.ndim == 3 else logits_abl
+    acc_abl = float((logits_a.argmax(dim=-1) == y).float().mean().item())
 
     return {
         "acc_orig": acc_orig,
         "acc_ablated": acc_abl,
-        "acc_drop": acc_orig - acc_ablated,
+        "acc_drop": acc_orig - acc_abl,
     }
