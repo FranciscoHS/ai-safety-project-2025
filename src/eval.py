@@ -1,55 +1,60 @@
 import torch
+import torch.nn.functional as F
 
-def model_accuracy(model, X, y):
+@torch.no_grad()
+def model_accuracy(model: torch.nn.Module, X: torch.Tensor, y: torch.Tensor):
     """
-    Evaluates the accuracy of a model's predictions on a batch of data.
+    Computes the accuracy of a model's predictions.
 
     Args:
-        model (torch.nn.Module): The model to evaluate. Should output logits of shape [batch, seq_len, d_vocab].
-        X (torch.Tensor): Input tensor to the model.
-        y (torch.Tensor): Ground truth labels for the batch. Shape: [batch].
+        model (torch.nn.Module): The model to evaluate.
+        X (torch.Tensor): Input tensor of shape [batch, ...].
+        y (torch.Tensor): Target tensor of shape [batch].
 
     Returns:
-        Tuple[float, int, int]:
-            - accuracy (float): The proportion of correct predictions at the last sequence position.
-            - correct_predictions (int): Number of correct predictions.
-            - total_predictions (int): Total number of predictions evaluated.
+        Tuple[float, int, int]: (accuracy, number of correct predictions, total samples).
+            - accuracy (float): Proportion of correct predictions.
+            - correct (int): Number of correct predictions.
+            - total (int): Total number of samples.
 
     Notes:
-        - Only the logits at the last sequence position are used for prediction.
-        - Assumes y contains the target token indices for the last position.
+        - Uses logits at the last sequence position if input is 3D.
+        - Moves X and y to the model's device.
+        - Sets model to evaluation mode and disables gradient computation.
     """
-    """Calculates accuracy given logits and labels."""
-    # Logits shape: [batch, seq_len, d_vocab]
-    # We only care about the prediction at the last position (index 2)
-    logits = model(X)
-    prediction_logits = logits[:, -1, :] # Shape: [batch, d_vocab]
-    predicted_tokens = torch.argmax(prediction_logits, dim=-1) # Shape: [batch]
-    correct_predictions = (predicted_tokens == y).sum().item()
-    total_predictions = y.shape[0]
-    accuracy = correct_predictions / total_predictions
-    return accuracy, correct_predictions, total_predictions
+    device = next(model.parameters()).device
+    model.eval()
+
+    X = X.to(device)
+    y = y.to(device, dtype=torch.long)
+
+    logits = model(X)  # [batch, seq_len, d_vocab] or [batch, d_vocab]
+    if logits.ndim == 3:
+        logits = logits[:, -1, :]  # last position
+
+    preds = logits.argmax(dim=-1)              # [batch]
+    correct = (preds == y).sum().item()
+    total = y.numel()
+    acc = correct / total if total else 0.0
+    return acc, correct, total
 
 
-def loss_fn(logits, labels):
+def loss_fn(logits: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
     """
-    Computes the negative log-likelihood loss for classification tasks.
-
-    If `logits` has three dimensions, selects the last time step along the second dimension.
-    Converts logits to float64, applies log-softmax, and gathers the log-probabilities corresponding to the true labels.
-    Returns the mean negative log-probability.
+    Computes cross-entropy loss over the final position.
 
     Args:
-        logits (torch.Tensor): The predicted logits of shape (batch_size, num_classes) or
-            (batch_size, sequence_length, num_classes).
-        labels (torch.Tensor): The true labels of shape (batch_size,).
+        logits (torch.Tensor): Logits tensor of shape [batch, seq_len, d_vocab] or [batch, d_vocab].
+        labels (torch.Tensor): Target tensor of shape [batch].
 
     Returns:
-        torch.Tensor: The mean negative log-likelihood loss (scalar).
+        torch.Tensor: Scalar cross-entropy loss.
+
+    Notes:
+        - If logits are 3D, uses the last sequence position.
+        - Ensures labels are of type Long and on the same device as logits.
     """
-    if len(logits.shape)==3:
-        logits = logits[:, -1]
-    logits = logits.to(torch.float64)
-    log_probs = logits.log_softmax(dim=-1)
-    correct_log_probs = log_probs.gather(dim=-1, index=labels[:, None])[:, 0]
-    return -correct_log_probs.mean()
+    if logits.ndim == 3:
+        logits = logits[:, -1, :]  # [batch, d_vocab]
+    labels = labels.to(logits.device, dtype=torch.long)
+    return F.cross_entropy(logits, labels)
