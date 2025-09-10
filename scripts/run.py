@@ -2,6 +2,12 @@ import argparse, time, random
 import numpy as np
 import torch
 
+# ensure repository root is on the import path
+import os, sys
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
 # Local imports
 from src.data import make_addition_dataset
 from src.model import build_model
