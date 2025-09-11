@@ -66,6 +66,8 @@ def main():
 
     # 4) Train (full-batch)
     t0 = time.time()
+    config_str = f"N{args.N}_frac{args.frac_train}_d{args.d_model}_h{args.n_heads}_m{args.d_mlp}"
+
     info = train_model(
         model,
         Xtr, ytr,
@@ -77,7 +79,14 @@ def main():
         checkpoint_every=0,
         progress=True,
         use_checkpoints=False,
+        # >>> NEW: tell it to write curves <<<
+        eval_every=200,
+        log_curves=True,
+        config_name=config_str,
+        seed=args.seed,
+        # curves_csv=None  # optional; default path resolves to results/curves/{config_str}_seed{seed}.csv
     )
+
     dt = time.time() - t0
 
     # 5) After-training metrics
