@@ -1,6 +1,8 @@
 from __future__ import annotations
 import torch
 from typing import Iterable, Dict
+import Optional
+import Tuple
 
 @torch.no_grad()
 def embedding_pca(
@@ -146,4 +148,75 @@ def pc2_ablated_accuracy(
         "acc_orig": acc_orig,
         "acc_ablated": acc_abl,
         "acc_drop": acc_orig - acc_abl,
+    }
+
+
+def _moving_average(x: np.ndarray, w: int) -> np.ndarray:
+    if w <= 1 or x.size == 0:
+        return x
+    w = min(w, x.size // 2 * 2 + 1)  # make odd-ish, avoid huge windows
+    pad = w // 2
+    xpad = np.pad(x, (pad, pad), mode="edge")
+    kernel = np.ones(w, dtype=float) / w
+    return np.convolve(xpad, kernel, mode="valid")
+
+def detect_grokking(
+    curves: pd.DataFrame,
+    *,
+    train_thr: float = 0.99,
+    test_thr: float  = 0.95,
+    min_gap_frac: float = 0.10,
+    smooth_window: int = 11,
+    max_steps: Optional[int] = None,
+) -> Dict[str, Optional[float]]:
+    """
+    Detect 'grokking' from learning curves:
+      - t_train: first step where smoothed train_acc >= train_thr
+      - t_test : first step where smoothed test_acc  >= test_thr
+      - delay  : t_test - t_train
+      - grok   : True if both thresholds hit and delay >= min_gap_frac * max_steps,
+                 and final test acc >= test_thr
+
+    Returns dict with keys: grok (bool), t_train, t_test, delay, final_test_acc.
+    """
+    # Basic checks
+    required = {"step", "split", "acc", "loss"}
+    if not required.issubset(set(curves.columns)):
+        raise ValueError(f"curves must have columns {required}, got {set(curves.columns)}")
+
+    df = curves.sort_values("step")
+    if max_steps is None:
+        max_steps = float(df["step"].max())
+
+    # Split & smooth
+    train_df = df[df["split"] == "train"]
+    test_df  = df[df["split"] == "test"]
+
+    if train_df.empty or test_df.empty:
+        # Without both splits we can't detect grokking robustly
+        return {"grok": False, "t_train": None, "t_test": None, "delay": None, "final_test_acc": None}
+
+    tr_steps = train_df["step"].to_numpy()
+    te_steps = test_df["step"].to_numpy()
+    tr_acc   = _moving_average(train_df["acc"].to_numpy(), smooth_window)
+    te_acc   = _moving_average(test_df["acc"].to_numpy(),   smooth_window)
+
+    # First threshold crossings
+    t_train = tr_steps[np.argmax(tr_acc >= train_thr)] if np.any(tr_acc >= train_thr) else None
+    t_test  = te_steps[np.argmax(te_acc >= test_thr)]  if np.any(te_acc >= test_thr)  else None
+
+    final_test_acc = float(test_df["acc"].to_numpy()[-1])
+
+    grok = False
+    delay = None
+    if t_train is not None and t_test is not None:
+        delay = float(t_test - t_train)
+        grok = (delay >= min_gap_frac * float(max_steps)) and (final_test_acc >= test_thr)
+
+    return {
+        "grok": bool(grok),
+        "t_train": float(t_train) if t_train is not None else None,
+        "t_test": float(t_test) if t_test is not None else None,
+        "delay": float(delay) if delay is not None else None,
+        "final_test_acc": final_test_acc,
     }
