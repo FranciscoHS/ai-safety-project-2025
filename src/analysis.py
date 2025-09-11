@@ -1,8 +1,7 @@
 from __future__ import annotations
 import torch
-from typing import Iterable, Dict
-import Optional
-import Tuple
+from typing import Iterable, Dict, Tuple, Optional
+
 
 @torch.no_grad()
 def embedding_pca(
