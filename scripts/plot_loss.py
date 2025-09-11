@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # scripts/plot_loss.py
 import os, sys, argparse
+import numpy as np
 import pandas as pd
 import matplotlib
 matplotlib.use("Agg")  # non-interactive backend for Colab/CLI
@@ -34,7 +35,9 @@ def main():
     ap.add_argument("--d_mlp", type=int, default=512)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--config_name", default="", help="Row key / filename stem; overrides the inferred one if set.")
-
+    ap.add_argument("--logy", action="store_true", help="Log-scale Y (loss).")
+    ap.add_argument("--logx", action="store_true", help="Log-scale X (steps).")
+    ap.add_argument("--miny", type=float, default=1e-8, help="Floor for loss on log-scale.")
     ap.add_argument("--smooth", type=int, default=1, help="Moving-average window (steps) for smoothing curves.")
     ap.add_argument("--out", default="", help="Output directory for the PNG (default: figures/curves)")
     args = ap.parse_args()
@@ -57,6 +60,9 @@ def main():
     tr_loss = moving_average(tr["loss"].to_numpy(), args.smooth)
     te_loss = moving_average(te["loss"].to_numpy(), args.smooth)
 
+    tr_loss = np.clip(tr_loss, args.miny, None)
+    te_loss = np.clip(te_loss, args.miny, None)
+
     # Plot
     plt.figure(figsize=(8, 5))
     if len(tr_steps):
@@ -72,6 +78,10 @@ def main():
 
     out_path = infer_fig_path(args)
     plt.tight_layout()
+    if args.logy:
+        plt.yscale("log")
+    if args.logx:
+        plt.xscale("log")
     plt.savefig(out_path, dpi=150)
     print(f"[plot] saved {out_path}")
 
